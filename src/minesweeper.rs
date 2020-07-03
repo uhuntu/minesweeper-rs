@@ -18,7 +18,9 @@ use std::collections::{HashMap, VecDeque};
 use std::time::Duration;
 use winrt::TryInto;
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+use array2d::Array2D;
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 enum MineState {
     Empty,
     Flag,
@@ -167,7 +169,9 @@ impl Minesweeper {
         let y = (point.y / (self.tile_size.y + self.margin.y)) as i32;
         let index = self.compute_index(x, y);
 
-        if self.is_in_bounds(x, y) && self.mine_states[index] != MineState::Revealed {
+        if self.is_in_bounds(x, y)
+        /* && self.mine_states[index] != MineState::Revealed */
+        {
             let visual = &self.tiles[index];
             self.selection_visual.set_parent_for_transform(visual)?;
             self.current_selection_x = x;
@@ -191,6 +195,7 @@ impl Minesweeper {
     pub fn on_pointer_pressed(
         &mut self,
         is_right_button: bool,
+        is_left_button: bool,
         is_eraser: bool,
     ) -> winrt::Result<()> {
         // TODO: Switch the condition back once we can subscribe to events.
@@ -207,6 +212,8 @@ impl Minesweeper {
             let index = self.compute_index(self.current_selection_x, self.current_selection_y);
             let visual = &self.tiles[index];
 
+            let mut boom = false;
+
             if self.mine_states[index] != MineState::Revealed {
                 if is_right_button || is_eraser {
                     let state = self.mine_states[index].cycle();
@@ -214,31 +221,77 @@ impl Minesweeper {
                     visual.set_brush(self.get_color_brush_from_mine_state(state))?;
                 } else if self.mine_states[index] == MineState::Empty {
                     if self.sweep(self.current_selection_x, self.current_selection_y)? {
-                        // We hit a mine! Setup and play an animation whiel locking any input.
-                        let hit_x = self.current_selection_x;
-                        let hit_y = self.current_selection_y;
-
-                        // First, hide the selection visual and reset the selection
-                        self.selection_visual.set_is_visible(false)?;
-                        self.current_selection_x = -1;
-                        self.current_selection_y = -1;
-
-                        // Create an animation batch so that we can know when the animations complete
-                        let batch = self
-                            .compositor
-                            .create_scoped_batch(CompositionBatchTypes::Animation)?;
-
-                        self.play_animation_on_all_mines(hit_x, hit_y)?;
-
-                        // Subscribe to the completion event and complete the batch
-                        // TODO: events
-                        batch.end()?;
-
-                        self.mine_animation_playing = true;
-                        self.game_over = true;
+                        boom = true;
                     }
                     // TODO: Detect that the player has won
                 }
+            } else if self.mine_states[index] == MineState::Revealed {
+                if is_left_button
+                    && self.neighbor_counts[index]
+                        == self.get_surrounding_flag_count(
+                            self.current_selection_x,
+                            self.current_selection_y,
+                        )
+                {
+                    let rows = vec![
+                        vec![-1, -1],
+                        vec![0, -1],
+                        vec![1, -1],
+                        vec![1, 0],
+                        vec![1, 1],
+                        vec![0, 1],
+                        vec![-1, 1],
+                        vec![-1, 0],
+                    ];
+                    let array = Array2D::from_rows(&rows);
+
+                    for mut row_iter in array.rows_iter() {
+                        let x = row_iter.next().unwrap();
+                        let y = row_iter.next().unwrap();
+                        if self.is_in_bounds(
+                            self.current_selection_x + x,
+                            self.current_selection_y + y,
+                        ) {
+                            let index = self.compute_index(
+                                self.current_selection_x + x,
+                                self.current_selection_y + y,
+                            );
+                            if self.mine_states[index] == MineState::Empty {
+                                if self.sweep(
+                                    self.current_selection_x + x,
+                                    self.current_selection_y + y,
+                                )? {
+                                    boom = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if boom {
+                // We hit a mine! Setup and play an animation whiel locking any input.
+                let hit_x = self.current_selection_x;
+                let hit_y = self.current_selection_y;
+
+                // First, hide the selection visual and reset the selection
+                self.selection_visual.set_is_visible(false)?;
+                self.current_selection_x = -1;
+                self.current_selection_y = -1;
+
+                // Create an animation batch so that we can know when the animations complete
+                let batch = self
+                    .compositor
+                    .create_scoped_batch(CompositionBatchTypes::Animation)?;
+
+                self.play_animation_on_all_mines(hit_x, hit_y)?;
+
+                // Subscribe to the completion event and complete the batch
+                // TODO: events
+                batch.end()?;
+
+                self.mine_animation_playing = true;
+                self.game_over = true;
             }
         }
         Ok(())
@@ -477,6 +530,10 @@ impl Minesweeper {
         self.is_in_bounds(x, y) && self.mines[self.compute_index(x, y)]
     }
 
+    fn test_flag(&self, x: i32, y: i32) -> bool {
+        self.is_in_bounds(x, y) && self.mine_states[self.compute_index(x, y)] == MineState::Flag
+    }
+
     fn get_surrounding_mine_count(&self, x: i32, y: i32) -> i32 {
         let mut count = 0;
 
@@ -509,6 +566,44 @@ impl Minesweeper {
         }
 
         if self.test_spot(x + 1, y - 1) {
+            count = count + 1;
+        }
+
+        count
+    }
+
+    fn get_surrounding_flag_count(&self, x: i32, y: i32) -> i32 {
+        let mut count = 0;
+
+        if self.test_flag(x + 1, y) {
+            count = count + 1;
+        }
+
+        if self.test_flag(x - 1, y) {
+            count = count + 1;
+        }
+
+        if self.test_flag(x, y + 1) {
+            count = count + 1;
+        }
+
+        if self.test_flag(x, y - 1) {
+            count = count + 1;
+        }
+
+        if self.test_flag(x + 1, y + 1) {
+            count = count + 1;
+        }
+
+        if self.test_flag(x - 1, y - 1) {
+            count = count + 1;
+        }
+
+        if self.test_flag(x - 1, y + 1) {
+            count = count + 1;
+        }
+
+        if self.test_flag(x + 1, y - 1) {
             count = count + 1;
         }
 

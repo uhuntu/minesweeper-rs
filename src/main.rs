@@ -82,7 +82,7 @@ fn run() -> winrt::Result<()> {
                 ..
             } => {
                 if state == ElementState::Pressed {
-                    game.on_pointer_pressed(button == MouseButton::Right, false)
+                    game.on_pointer_pressed(button == MouseButton::Right, button == MouseButton::Left, false)
                         .unwrap();
                 }
             }
